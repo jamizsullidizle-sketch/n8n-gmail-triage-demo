@@ -1,0 +1,925 @@
+{
+  "id": "gmTriageDemo0001",
+  "name": "Gmail inbound request triage (demo)",
+  "nodes": [
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000001",
+      "name": "Gmail Trigger – new email",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "-from:me -label:triage-done",
+          "labelIds": []
+        },
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "notes": "Polls every minute. Set Label IDs to watch only the shared inbox / a specific label. \"-from:me\" stops the bot re-processing its own mail."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000002",
+      "name": "Skip already-processed emails",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "operation": "removeItemsSeenInPreviousExecutions",
+        "logic": "removeItemsWithAlreadySeenKeyValues",
+        "dedupeValue": "={{ $json.id }}",
+        "options": {
+          "historySize": 10000
+        }
+      },
+      "notes": "Duplicate protection: the Gmail message ID is remembered across runs, so a re-poll or retry never logs/drafts twice."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000003",
+      "name": "Classify (keyword rules)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// ---- Keyword triage rules (shared by the n8n Code node and the local test) ----\n// Edit these lists to tune the triage. Order of CATEGORY_RULES = priority on ties.\nconst CATEGORY_RULES = {\n  'Spam-Other': [\n    'unsubscribe', 'newsletter', 'seo services', 'guest post', 'backlinks', 'crypto',\n    'bitcoin', 'you have won', 'lottery', 'limited time offer', 'act now', 'viagra',\n    'rank #1 on google', 'webinar invitation', 'no-reply', 'noreply'\n  ],\n  'Billing': [\n    'invoice', 'receipt', 'payment', 'refund', 'charged', 'charge', 'billing',\n    'subscription', 'order #', 'order number', 'overdue', 'credit note', 'vat',\n    'rechnung', 'zahlung'\n  ],\n  'Consultancy': [\n    'quote', 'quotation', 'proposal', 'consulting', 'consultation', 'consultancy',\n    'project', 'audit', 'migration', 'rollout', 'pricing for', 'how much would',\n    'interested in your services', 'hire you', 'book a call', 'discovery call',\n    'angebot', 'beratung'\n  ],\n  'Support': [\n    'not working', \"can't\", 'cannot', 'error', 'broken', 'help', 'how do i', 'how to',\n    'issue', 'problem', 'stopped', 'password', 'login', 'locked out', 'reset',\n    'not receiving', 'bounce', 'printer', 'vpn', 'outlook', 'urgent', 'down',\n    'funktioniert nicht', 'fehler', 'hilfe'\n  ]\n};\n\n// Words in the subject count double: subjects are short and usually say what the email is.\nconst SUBJECT_WEIGHT = 2;\n\nfunction countHits(haystack, keywords) {\n  const hits = [];\n  for (const kw of keywords) {\n    if (haystack.includes(kw)) hits.push(kw);\n  }\n  return hits;\n}\n\nfunction extractDetails(text) {\n  const details = {};\n  const inv = text.match(/\\b(?:invoice|inv|rechnung)\\s*(?:no\\.?|number|nr\\.?|#)?\\s*[:#]?\\s*([A-Z0-9][A-Z0-9\\-\\/]{2,})/i);\n  if (inv) details.invoiceNumber = inv[1];\n  const ord = text.match(/\\border\\s*(?:no\\.?|number|nr\\.?|#)?\\s*[:#]?\\s*([A-Z0-9][A-Z0-9\\-]{2,})/i);\n  if (ord) details.orderNumber = ord[1];\n  const amt = text.match(/(?:€|\\$|£|EUR|USD|GBP)\\s?(\\d{1,3}(?:[.,]\\d{3})*(?:[.,]\\d{2})?)|(\\d{1,3}(?:[.,]\\d{3})*(?:[.,]\\d{2})?)\\s?(?:€|EUR)/i);\n  if (amt) details.amount = (amt[0] || '').trim();\n  return details;\n}\n\nfunction classifyEmail({ fromAddress = '', subject = '', body = '' }) {\n  const s = String(subject).toLowerCase();\n  const b = String(body).toLowerCase();\n  const f = String(fromAddress).toLowerCase();\n\n  const scores = {};\n  const matched = {};\n  for (const [cat, kws] of Object.entries(CATEGORY_RULES)) {\n    const subjHits = countHits(s, kws);\n    const bodyHits = countHits(b + ' ' + f, kws);\n    scores[cat] = subjHits.length * SUBJECT_WEIGHT + bodyHits.length;\n    matched[cat] = [...new Set([...subjHits, ...bodyHits])];\n  }\n\n  // Pick the highest score; ties are broken by the order of CATEGORY_RULES above.\n  let category = 'Spam-Other';\n  let best = 0;\n  for (const cat of Object.keys(CATEGORY_RULES)) {\n    if (scores[cat] > best) { best = scores[cat]; category = cat; }\n  }\n  // Nothing matched at all -> treat as Support so a human still sees it (safer than hiding it as spam).\n  const confidence = best === 0 ? 'none' : best >= 3 ? 'high' : 'low';\n  if (best === 0) category = 'Support';\n\n  return {\n    category,\n    confidence,\n    needsHumanReview: confidence !== 'high',\n    scores,\n    matchedKeywords: matched[category] || [],\n    details: extractDetails(subject + '\\n' + body)\n  };\n}\n\n\n// ---- n8n wrapper: map Gmail Trigger fields -> classifier -> clean output ----\nconst out = [];\nfor (const item of $input.all()) {\n  const m = item.json;\n  const sender = (m.from && m.from.value && m.from.value[0]) || {};\n  const body = m.text || m.textAsHtml || m.snippet || '';\n  const r = classifyEmail({ fromAddress: sender.address || '', subject: m.subject || '', body });\n  out.push({ json: {\n    messageId: m.id,\n    threadId: m.threadId,\n    receivedAt: m.date || new Date().toISOString(),\n    fromName: sender.name || '',\n    fromEmail: sender.address || '',\n    subject: m.subject || '(no subject)',\n    snippet: String(body).slice(0, 300),\n    category: r.category,\n    confidence: r.confidence,\n    needsHumanReview: r.needsHumanReview,\n    matchedKeywords: r.matchedKeywords.join(', '),\n    invoiceNumber: r.details.invoiceNumber || '',\n    orderNumber: r.details.orderNumber || '',\n    amount: r.details.amount || '',\n    classifiedBy: 'keywords'\n  }, pairedItem: item.pairedItem });\n}\nreturn out;\n"
+      },
+      "notes": "Keyword rules + invoice/order/amount extraction. Same code as src/classify.js (tested in tests/)."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000004",
+      "name": "[OPTIONAL] LLM classify (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "disabled": true,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'Classify this email for an IT support & consultancy business. Reply as JSON {\"category\": \"Support|Consultancy|Billing|Spam-Other\", \"invoiceNumber\": \"\", \"orderNumber\": \"\", \"amount\": \"\"}.' }, { role: 'user', content: 'Subject: ' + $json.subject + '\\n\\n' + $json.snippet } ] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account (optional)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "notes": "OPTIONAL – disabled by default. Enable this and the next node to let an LLM decide the category. If the API fails, the keyword result is kept."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000005",
+      "name": "[OPTIONAL] Use LLM answer if valid",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "disabled": true,
+      "parameters": {
+        "jsCode": "// Merge the LLM answer into the keyword result; fall back to keywords on any problem.\nconst allowed = ['Support', 'Consultancy', 'Billing', 'Spam-Other'];\nreturn $input.all().map((item, i) => {\n  const base = $('Classify (keyword rules)').all()[i].json;\n  try {\n    const llm = JSON.parse(item.json.choices[0].message.content);\n    if (allowed.includes(llm.category)) {\n      return { json: { ...base, category: llm.category, classifiedBy: 'llm',\n        invoiceNumber: base.invoiceNumber || llm.invoiceNumber || '',\n        orderNumber: base.orderNumber || llm.orderNumber || '',\n        amount: base.amount || llm.amount || '' } };\n    }\n  } catch (e) { /* keep keyword result */ }\n  return { json: base };\n});"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000010",
+      "name": "Route by category",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a1b2c3d4-0000-4000-8000-000000000006",
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "Support",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Support"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a1b2c3d4-0000-4000-8000-000000000007",
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "Consultancy",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Consultancy"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a1b2c3d4-0000-4000-8000-000000000008",
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "Billing",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Billing"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a1b2c3d4-0000-4000-8000-000000000009",
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "Spam-Other",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Spam-Other"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000011",
+      "name": "Label: Support",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1340,
+        0
+      ],
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Classify (keyword rules)').item.json.messageId }}",
+        "labelIds": [
+          "REPLACE_WITH_LABEL_ID_triage-support",
+          "REPLACE_WITH_LABEL_ID_triage-done"
+        ]
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000012",
+      "name": "Label: Consultancy",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1340,
+        220
+      ],
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Classify (keyword rules)').item.json.messageId }}",
+        "labelIds": [
+          "REPLACE_WITH_LABEL_ID_triage-consultancy",
+          "REPLACE_WITH_LABEL_ID_triage-done"
+        ]
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000013",
+      "name": "Label: Billing",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1340,
+        440
+      ],
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Classify (keyword rules)').item.json.messageId }}",
+        "labelIds": [
+          "REPLACE_WITH_LABEL_ID_triage-billing",
+          "REPLACE_WITH_LABEL_ID_triage-done"
+        ]
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000014",
+      "name": "Label: Spam-Other",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1340,
+        660
+      ],
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Classify (keyword rules)').item.json.messageId }}",
+        "labelIds": [
+          "REPLACE_WITH_LABEL_ID_triage-spam-other",
+          "REPLACE_WITH_LABEL_ID_triage-done"
+        ]
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000015",
+      "name": "Draft acknowledgement (NOT sent)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1580,
+        0
+      ],
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Re: {{ $('Classify (keyword rules)').item.json.subject }}",
+        "emailType": "text",
+        "message": "=Hi {{ $('Classify (keyword rules)').item.json.fromName || 'there' }},\n\nThanks for getting in touch. We've received your request and logged it, and a team member will get back to you shortly.\n\nIf it's urgent, just reply to this email with \"URGENT\" and a phone number.\n\nBest regards,\nThe Support Team",
+        "options": {
+          "threadId": "={{ $('Classify (keyword rules)').item.json.threadId }}",
+          "sendTo": "={{ $('Classify (keyword rules)').item.json.fromEmail }}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Creates a Gmail DRAFT in the same thread. A person reviews and clicks Send – nothing goes out automatically."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000016",
+      "name": "Log request (Requests sheet)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1820,
+        220
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Requests"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [],
+          "value": {
+            "messageId": "={{ $('Classify (keyword rules)').item.json.messageId }}",
+            "receivedAt": "={{ $('Classify (keyword rules)').item.json.receivedAt }}",
+            "fromName": "={{ $('Classify (keyword rules)').item.json.fromName }}",
+            "fromEmail": "={{ $('Classify (keyword rules)').item.json.fromEmail }}",
+            "subject": "={{ $('Classify (keyword rules)').item.json.subject }}",
+            "category": "={{ $('Classify (keyword rules)').item.json.category }}",
+            "confidence": "={{ $('Classify (keyword rules)').item.json.confidence }}",
+            "invoiceNumber": "={{ $('Classify (keyword rules)').item.json.invoiceNumber }}",
+            "orderNumber": "={{ $('Classify (keyword rules)').item.json.orderNumber }}",
+            "amount": "={{ $('Classify (keyword rules)').item.json.amount }}",
+            "needsHumanReview": "={{ $('Classify (keyword rules)').item.json.needsHumanReview }}",
+            "status": "open"
+          }
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Append-or-update keyed on messageId = a second guard against duplicate rows."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000017",
+      "name": "Add lead (Leads sheet)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1580,
+        220
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Leads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [],
+          "value": {
+            "messageId": "={{ $('Classify (keyword rules)').item.json.messageId }}",
+            "name": "={{ $('Classify (keyword rules)').item.json.fromName }}",
+            "email": "={{ $('Classify (keyword rules)').item.json.fromEmail }}",
+            "subject": "={{ $('Classify (keyword rules)').item.json.subject }}",
+            "date": "={{ $('Classify (keyword rules)').item.json.receivedAt }}"
+          }
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000018",
+      "name": "Notify team on Slack (new lead)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1820,
+        0
+      ],
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#new-leads"
+        },
+        "text": "=:briefcase: New consultancy inquiry\n*From:* {{ $('Classify (keyword rules)').item.json.fromName }} <{{ $('Classify (keyword rules)').item.json.fromEmail }}>\n*Subject:* {{ $('Classify (keyword rules)').item.json.subject }}\n> {{ $('Classify (keyword rules)').item.json.snippet }}",
+        "otherOptions": {}
+      },
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "REPLACE_WITH_SLACK_CREDENTIAL_ID",
+          "name": "Slack account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Swap for a Gmail \"Send\" node if the team prefers an email alert."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000019",
+      "name": "Every weekday 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1000
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000020",
+      "name": "Find triaged threads older than 2 days",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        220,
+        1000
+      ],
+      "parameters": {
+        "resource": "thread",
+        "operation": "getAll",
+        "limit": 50,
+        "filters": {
+          "q": "{label:triage-support label:triage-consultancy label:triage-billing} older_than:2d newer_than:30d -label:triage-reminded"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Change \"older_than:2d\" to set the X days before a reminder."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000021",
+      "name": "Get full thread",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        440,
+        1000
+      ],
+      "parameters": {
+        "resource": "thread",
+        "operation": "get",
+        "threadId": "={{ $json.id }}",
+        "simple": true,
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000022",
+      "name": "Keep only unanswered",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        1000
+      ],
+      "parameters": {
+        "jsCode": "// A thread counts as answered if any message in it carries Gmail's SENT label (i.e. we replied).\nconst out = [];\nfor (const item of $input.all()) {\n  const t = item.json;\n  const msgs = t.messages || [];\n  const answered = msgs.some(m => (m.labelIds || []).includes('SENT'));\n  if (!answered && msgs.length) {\n    const first = msgs[0];\n    out.push({ json: { threadId: t.id, subject: first.Subject || first.subject || '(no subject)',\n      from: first.From || first.from || '', snippet: first.snippet || '', messages: msgs.length } });\n  }\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000023",
+      "name": "Remind team on Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        1000
+      ],
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#support"
+        },
+        "text": "=:alarm_clock: No reply after 2+ days\n*From:* {{ $json.from }}\n*Subject:* {{ $json.subject }}\nhttps://mail.google.com/mail/u/0/#all/{{ $json.threadId }}",
+        "otherOptions": {}
+      },
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "REPLACE_WITH_SLACK_CREDENTIAL_ID",
+          "name": "Slack account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000024",
+      "name": "Label thread: reminded",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1100,
+        1000
+      ],
+      "parameters": {
+        "resource": "thread",
+        "operation": "addLabels",
+        "threadId": "={{ $('Keep only unanswered').item.json.threadId }}",
+        "labelIds": [
+          "REPLACE_WITH_LABEL_ID_triage-reminded"
+        ]
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account (set me)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Prevents the same thread being reminded every day."
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000025",
+      "name": "Note: overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -220
+      ],
+      "parameters": {
+        "content": "## Inbound request triage\nGmail → dedupe → classify → label → draft / log / notify.\nNothing is ever sent to a customer automatically: replies are **drafts** for review.",
+        "width": 520,
+        "height": 180,
+        "color": 4
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000026",
+      "name": "Note: optional LLM",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        620,
+        120
+      ],
+      "parameters": {
+        "content": "### OPTIONAL – LLM classifier\nDisabled by default (keyword rules work without any AI cost). Enable both nodes to let OpenAI pick the category; on failure it falls back to the keyword result.",
+        "width": 440,
+        "height": 340,
+        "color": 3
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000027",
+      "name": "Note: reminders",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        820
+      ],
+      "parameters": {
+        "content": "## Follow-up reminders\nWeekdays 09:00: find triaged threads with no reply after 2 days → Slack reminder → label so it only fires once.",
+        "width": 520,
+        "height": 160,
+        "color": 5
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000028",
+      "name": "Note: errors",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        820
+      ],
+      "parameters": {
+        "content": "### Error handling\n• Retries (3× / 5 s) on every Gmail/Sheets/Slack node\n• Message-ID dedupe + append-or-update in Sheets\n• Failed runs → import n8n-triage-error-handler.json and set it as this workflow's Error Workflow",
+        "width": 520,
+        "height": 200,
+        "color": 2
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger – new email": {
+      "main": [
+        [
+          {
+            "node": "Skip already-processed emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip already-processed emails": {
+      "main": [
+        [
+          {
+            "node": "Classify (keyword rules)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify (keyword rules)": {
+      "main": [
+        [
+          {
+            "node": "[OPTIONAL] LLM classify (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[OPTIONAL] LLM classify (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "[OPTIONAL] Use LLM answer if valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[OPTIONAL] Use LLM answer if valid": {
+      "main": [
+        [
+          {
+            "node": "Route by category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by category": {
+      "main": [
+        [
+          {
+            "node": "Label: Support",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Label: Consultancy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Label: Billing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Label: Spam-Other",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label: Support": {
+      "main": [
+        [
+          {
+            "node": "Draft acknowledgement (NOT sent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft acknowledgement (NOT sent)": {
+      "main": [
+        [
+          {
+            "node": "Log request (Requests sheet)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label: Consultancy": {
+      "main": [
+        [
+          {
+            "node": "Add lead (Leads sheet)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add lead (Leads sheet)": {
+      "main": [
+        [
+          {
+            "node": "Notify team on Slack (new lead)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log request (Requests sheet)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label: Billing": {
+      "main": [
+        [
+          {
+            "node": "Log request (Requests sheet)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every weekday 09:00": {
+      "main": [
+        [
+          {
+            "node": "Find triaged threads older than 2 days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find triaged threads older than 2 days": {
+      "main": [
+        [
+          {
+            "node": "Get full thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get full thread": {
+      "main": [
+        [
+          {
+            "node": "Keep only unanswered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep only unanswered": {
+      "main": [
+        [
+          {
+            "node": "Remind team on Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remind team on Slack": {
+      "main": [
+        [
+          {
+            "node": "Label thread: reminded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "errorWorkflow": "gmTriageErrHdl01"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

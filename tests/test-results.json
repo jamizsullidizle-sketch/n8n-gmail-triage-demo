@@ -1,0 +1,147 @@
+{
+  "ranAt": "2026-10-25T12:25:01.962Z",
+  "total": 9,
+  "passed": 9,
+  "results": [
+    {
+      "id": 1,
+      "subject": "Outlook stopped receiving emails",
+      "expected": "Support",
+      "got": "Support",
+      "confidence": "high",
+      "details": {},
+      "matchedKeywords": [
+        "stopped",
+        "outlook",
+        "error",
+        "help",
+        "not receiving"
+      ],
+      "pass": true
+    },
+    {
+      "id": 2,
+      "subject": "Quote for Microsoft 365 migration",
+      "expected": "Consultancy",
+      "got": "Consultancy",
+      "confidence": "high",
+      "details": {},
+      "matchedKeywords": [
+        "quote",
+        "migration",
+        "how much would",
+        "interested in your services",
+        "book a call"
+      ],
+      "pass": true
+    },
+    {
+      "id": 3,
+      "subject": "Invoice INV-2026-0142 overdue",
+      "expected": "Billing",
+      "got": "Billing",
+      "confidence": "high",
+      "details": {
+        "invoiceNumber": "INV-2026-0142",
+        "amount": "€249,00"
+      },
+      "matchedKeywords": [
+        "invoice",
+        "overdue",
+        "payment"
+      ],
+      "pass": true
+    },
+    {
+      "id": 4,
+      "subject": "Rank #1 on Google in 30 days!!!",
+      "expected": "Spam-Other",
+      "got": "Spam-Other",
+      "confidence": "high",
+      "details": {},
+      "matchedKeywords": [
+        "rank #1 on google",
+        "unsubscribe",
+        "seo services",
+        "backlinks",
+        "limited time offer",
+        "act now"
+      ],
+      "pass": true
+    },
+    {
+      "id": 5,
+      "subject": "How do I reset my password?",
+      "expected": "Support",
+      "got": "Support",
+      "confidence": "high",
+      "details": {},
+      "matchedKeywords": [
+        "how do i",
+        "password",
+        "reset",
+        "locked out"
+      ],
+      "pass": true
+    },
+    {
+      "id": 6,
+      "subject": "Refund for order #A7781",
+      "expected": "Billing",
+      "got": "Billing",
+      "confidence": "high",
+      "details": {
+        "orderNumber": "A7781",
+        "amount": "$49.00"
+      },
+      "matchedKeywords": [
+        "refund",
+        "order #",
+        "payment",
+        "charged",
+        "charge"
+      ],
+      "pass": true
+    },
+    {
+      "id": 7,
+      "subject": "IT security audit project – Angebot?",
+      "expected": "Consultancy",
+      "got": "Consultancy",
+      "confidence": "high",
+      "details": {},
+      "matchedKeywords": [
+        "project",
+        "audit",
+        "angebot",
+        "proposal",
+        "rollout"
+      ],
+      "pass": true
+    },
+    {
+      "id": 8,
+      "subject": "Drucker funktioniert nicht",
+      "expected": "Support",
+      "got": "Support",
+      "confidence": "high",
+      "details": {},
+      "matchedKeywords": [
+        "funktioniert nicht",
+        "fehler",
+        "hilfe"
+      ],
+      "pass": true
+    },
+    {
+      "id": 9,
+      "subject": "Lunch on Friday?",
+      "expected": "Support",
+      "got": "Support",
+      "confidence": "none",
+      "details": {},
+      "matchedKeywords": [],
+      "pass": true
+    }
+  ]
+}

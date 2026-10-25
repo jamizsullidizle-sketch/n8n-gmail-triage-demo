@@ -1,0 +1,11 @@
+[
+  {"id":1,"from":"anna.huber@example.at","subject":"Outlook stopped receiving emails","body":"Hi, since this morning Outlook is not receiving any new mail and I get an error when I send. Can you help?","expected":"Support"},
+  {"id":2,"from":"markus@example-firm.at","subject":"Quote for Microsoft 365 migration","body":"Hello, we are a 12-person office and are interested in your services. How much would a migration from our old mail host to Microsoft 365 cost? Could we book a call next week?","expected":"Consultancy"},
+  {"id":3,"from":"accounts@supplier.example","subject":"Invoice INV-2026-0142 overdue","body":"Dear customer, invoice INV-2026-0142 for €249,00 is now 14 days overdue. Please arrange payment.","expected":"Billing"},
+  {"id":4,"from":"growth@seo-blast.example","subject":"Rank #1 on Google in 30 days!!!","body":"We offer SEO services and backlinks at a limited time offer. Act now. Click to unsubscribe.","expected":"Spam-Other"},
+  {"id":5,"from":"peter@example.com","subject":"How do I reset my password?","body":"I'm locked out of my account after the update. How do I reset the password?","expected":"Support"},
+  {"id":6,"from":"lisa@startup.example","subject":"Refund for order #A7781","body":"I was charged twice for order #A7781 ($49.00). Can I get a refund for the duplicate payment?","expected":"Billing"},
+  {"id":7,"from":"cto@example-gmbh.at","subject":"IT security audit project – Angebot?","body":"Guten Tag, we are planning an IT security audit and a VPN rollout for our two offices. Could you send a proposal / Angebot?","expected":"Consultancy"},
+  {"id":8,"from":"karl@example.at","subject":"Drucker funktioniert nicht","body":"Hallo, der Drucker zeigt einen Fehler an. Hilfe bitte!","expected":"Support"},
+  {"id":9,"from":"friend@example.com","subject":"Lunch on Friday?","body":"Are you free for lunch on Friday?","expected":"Support"}
+]

@@ -1,0 +1,13 @@
+Real n8n execution (n8n 2.22.6, `n8n execute --id=gmTriageTest0001`), run 2026-10-25
+Manual Trigger -> 9 sample Gmail-shaped items -> the actual "Classify (keyword rules)" Code node
+
+messageId | category | confidence | invoice | order | amount
+msg1 | Support | high | - | - | -
+msg2 | Consultancy | high | - | - | -
+msg3 | Billing | high | INV-2026-0142 | - | €249,00
+msg4 | Spam-Other | high | - | - | -
+msg5 | Support | high | - | - | -
+msg6 | Billing | high | - | A7781 | $49.00
+msg7 | Consultancy | high | - | - | -
+msg8 | Support | high | - | - | -
+msg9 | Support | none | - | - | -

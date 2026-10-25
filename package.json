@@ -1,0 +1,11 @@
+{
+  "name": "n8n-gmail-triage-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo n8n workflow: Gmail inbound request triage for an IT support & consultancy inbox",
+  "scripts": {
+    "build": "node src/build-workflow.js",
+    "test": "node tests/run-tests.js && node tests/test-code-node.js"
+  },
+  "license": "MIT"
+}
